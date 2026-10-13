@@ -1,0 +1,113 @@
+# Default configuration for the capability-ceiling experiment.
+# Edit this file, not the code. Every training arm reads the same
+# budget block, which is what makes the arms comparable.
+
+audit_version: v1
+seed: 0
+seeds: [0, 1, 2]
+output_root: runs
+
+models:
+  student: Qwen/Qwen3-0.6B
+  # Secondary student with released Gemma Scope SAEs:
+  #   google/gemma-2-2b
+  teacher: Qwen/Qwen3-8B
+  dtype: bfloat16
+  device: cuda
+  # Teacher must clear this accuracy on a capability before any arm is
+  # allowed to train on it. Otherwise the arm is logged as skipped.
+  min_teacher_accuracy: 0.60
+
+battery:
+  # Capabilities the student plausibly already represents.
+  represented:
+    - gsm8k_math
+    - base10_multistep_arith
+    - format_compliance
+    - extractive_qa
+  # Capabilities constructed to be absent from pretraining.
+  absent:
+    - base7_arith_glyphs
+    - script_transliteration
+    - substitution_cipher
+    - synthetic_grammar_validity
+  n_train_per_capability: 4000
+  n_eval_per_capability: 500
+  max_prompt_tokens: 512
+  max_new_tokens: 256
+
+audit:
+  probe_layers: all          # or a list like [6, 12, 18]
+  probe_l2: 1.0
+  probe_test_frac: 0.2
+  probe_shuffle_control: true
+  sae:
+    width_multiple: 16       # dictionary width = width_multiple * d_model
+    k: 32                    # BatchTopK sparsity
+    lr: 3.0e-4
+    steps: 20000
+    batch_tokens: 4096
+    layer: middle            # middle | last | an int
+  coverage_f1_threshold: 0.5
+  # Terciles of R(c) define the split. Written once, then frozen.
+  split_mode: tercile
+
+budget:
+  # Shared across all four arms. Do not tune one arm harder.
+  token_budget: 8_000_000
+  optimizer_steps: 2000
+  batch_size: 8
+  grad_accum: 4
+  lr: 1.0e-5
+  warmup_steps: 100
+  max_grad_norm: 1.0
+  parameterization: full     # full | lora
+  lora:
+    r: 32
+    alpha: 64
+    dropout: 0.05
+    target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+
+arms:
+  offpolicy_kd:
+    teacher_samples_per_prompt: 4
+    teacher_temperature: 0.8
+  onpolicy_distill:
+    # The arm under test. Generalized KD: lambda mixes student-generated
+    # and teacher-generated data, beta mixes forward and reverse KL.
+    student_rollouts_per_prompt: 4
+    rollout_temperature: 1.0
+    lambda_onpolicy: 1.0     # 1.0 = fully on-policy
+    beta_divergence: 1.0     # 1.0 = reverse KL, 0.0 = forward KL
+    teacher_topk: 128        # truncation for the teacher distribution
+  rlvr:
+    rollouts_per_prompt: 8
+    kl_coef: 0.02
+    clip_eps: 0.2
+  continued_pretrain:
+    # Positive control: in-domain corpus for each capability.
+    corpus_tokens_per_capability: 2_000_000
+    lr: 5.0e-5
+
+eval:
+  pass_at_k: [1, 4, 16, 64, 256]
+  sample_temperature: 0.8
+  sample_top_p: 0.95
+  n_samples_for_passk: 256
+
+diffing:
+  crosscoder:
+    width_multiple: 16
+    k: 32
+    lr: 3.0e-4
+    steps: 30000
+    batch_tokens: 4096
+    layer: middle
+    variant: batchtopk       # batchtopk | delta
+  # Latent-scaling correction. Mandatory: any novel-latent number
+  # reported without it is wrong.
+  latent_scaling: true
+  novelty_decoder_norm_ratio: 0.9
+  causal:
+    ablate: true
+    steer_coefficients: [-2.0, -1.0, 1.0, 2.0]
